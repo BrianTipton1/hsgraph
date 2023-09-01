@@ -1,4 +1,4 @@
-# Revision history for CS438SearchAlgorithmsHW1
+# Revision history for hsgraph
 
 ## 0.1.0.0 -- YYYY-mm-dd
 

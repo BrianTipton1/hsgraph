@@ -1,11 +1,11 @@
 cabal-version:      2.4
-name:               CS438SearchAlgorithmsHW1
+name:               hsgraph
 version:            0.1.0.0
 synopsis:           Implementation of search algorithms in haskell
 
 -- A longer description of the package.
 -- description:
-homepage:           https://github.com/BrianTipton1/CS438SearchAlgorithmsHW1
+homepage:           https://github.com/BrianTipton1/hsgraph
 
 -- A URL where users can report bugs.
 -- bug-reports:
@@ -18,7 +18,7 @@ maintainer:         briantiptondev@gmail.com
 -- category:
 extra-source-files: CHANGELOG.md
 
-executable CS438SearchAlgorithmsHW1
+executable hsgraph
     main-is:          Main.hs
 
     -- Modules included in this executable, other than Main.

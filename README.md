@@ -15,6 +15,6 @@ ghc -o hsgraph ./app/Main.hs
 
 ## Clone + Cabal Usage 
 ```bash
-git clone git@github.com:BrianTipton1/CS438SearchAlgorithmsHW1.git
-cabal run CS438SearchAlgorithmsHW1 -- "/path/to/my/(graphFile|graphFilledDir)"
+git clone git@github.com:BrianTipton1/hsgraph.git
+cabal run hsgraph -- "/path/to/my/(graphFile|graphFilledDir)"
 ```
