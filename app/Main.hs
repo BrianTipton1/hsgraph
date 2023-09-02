@@ -6,8 +6,7 @@ module Main where
 import Control.Exception (Exception)
 import Control.Monad (filterM)
 import Data.Char (isAlpha, isDigit, toLower)
-import Data.List (partition)
-import Data.List.NonEmpty (fromList, toList)
+import Data.List (foldl', partition)
 import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
 import System.Environment (getArgs, getEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitFailure, exitWith)
@@ -68,12 +67,20 @@ uuidgen = commandBuilder UUIDgen $ do
     uuid <- init <$> readProcess (show UUIDgen) [] ""
     let removedHyphens = filter (/= '-') uuid
     let (alpha, numeric) = partition isAlpha removedHyphens
-    let newUUID = alpha ++ numeric
-    return newUUID
+    return $ alpha ++ numeric
 
 dot :: String -> String -> IO ExitCode
 dot fileName fileType = commandBuilder Dot $ do
-    (ec, _, _) <- readProcessWithExitCode (show Dot) ["-Tpng", "-Gdpi=300", fileName, "-o", fileName ++ ".png"] ""
+    (ec, _, _) <-
+        readProcessWithExitCode
+            (show Dot)
+            [ "-T" ++ fileType
+            , "-Gdpi=300"
+            , fileName
+            , "-o"
+            , fileName ++ "." ++ fileType
+            ]
+            ""
     return ec
 
 maybeCommandErr :: Command -> IO (Maybe CommandErrors)
@@ -93,7 +100,6 @@ newtype Distance = Distance Integer
 newtype Label = Label String
 newtype Edge = Edge (Label, Distance) deriving (Show)
 
-newtype NodeTable = NodeTable [NodeRow]
 
 data Graph = Graph
     { nodes :: [Node]
@@ -106,11 +112,6 @@ data Graph = Graph
 data Node = Node
     { label :: Label
     , adjacent :: [Edge]
-    }
-
-data NodeRow = NodeRow
-    { node :: Node
-    , distance :: Distance
     }
 
 --- End custom types section
@@ -210,6 +211,7 @@ data VizColor
     | VizRed
     | VizGreen
     | VizBlack
+    deriving (Eq)
 
 vizColorToString :: VizColor -> String
 vizColorToString VizBlue = wrapStrInDoubleQuote "blue"
@@ -222,6 +224,12 @@ data VizEdgeType
     | VizEdgeDashed
     | VizEdgeBold
     | VizEdgeDotted
+    deriving (Eq)
+
+instance Show VizEdgeType where
+    show :: VizEdgeType -> String
+    show e =
+        vizEdgeTypeToString e
 
 vizEdgeTypeToString :: VizEdgeType -> String
 vizEdgeTypeToString VizEdgeSolid = wrapStrInDoubleQuote "solid"
@@ -234,24 +242,44 @@ data VizArrowType
     | VizArrowCurve
     | VizArrowICurve
     | VizArrowVee
+    deriving (Eq)
 
-vizArrowTypeToString :: VizArrowType -> String
-vizArrowTypeToString VizArrowNormal = wrapStrInDoubleQuote "normal"
-vizArrowTypeToString VizArrowCurve = wrapStrInDoubleQuote "curve"
-vizArrowTypeToString VizArrowICurve = wrapStrInDoubleQuote "icurve"
-vizArrowTypeToString VizArrowVee = wrapStrInDoubleQuote "vee"
+instance Show VizArrowType where
+    show :: VizArrowType -> String
+    show e =
+        vizArrowTypeToString e
 
 data VizNodeProps = VizNodeProps
-    { width :: String
-    , height :: String
-    , vizPropLabel :: String
+    { width :: Int
+    , height :: Int
     , style :: String
+    , shape :: String
     }
+    deriving (Eq)
+
+instance Show VizNodeProps where
+    show :: VizNodeProps -> String
+    show
+        VizNodeProps
+            { width = width
+            , height = height
+            , style = style
+            , shape = shape
+            } =
+            "[style=" ++ style
+                ++ ", shape="
+                ++ shape
+                ++ ", width="
+                ++ show width
+                ++ ", height="
+                ++ show height
+                ++ "];"
 
 data VizNode = VizNode
     { vizId :: String
-    , props :: [VizNodeProps]
+    , nodeProps :: VizNodeProps
     }
+    deriving (Eq)
 
 data VizEdge = VizEdge
     { vizSelf :: VizNode
@@ -262,50 +290,21 @@ data VizEdge = VizEdge
     , vizDistance :: String
     , vizColor :: VizColor
     }
+    deriving (Eq)
 
-vizEdgeToStringBuilder :: VizEdge -> String
-vizEdgeToStringBuilder
-    VizEdge
-        { vizArrowType = arrowType
-        , vizEdgeType = edge
-        , vizDistance = vizDistance
-        , vizSelf =
-            VizNode
-                { vizId = id
-                , props = props
-                }
-        , vizOther = other
-        , vizColor = color
-        , vizArrow = arrow
-        } =
-        "\n\tedge ["
-            ++ "label=\""
-            ++ vizDistance
-            ++ "\", "
-            ++ "color="
-            ++ vizColorToString color
-            ++ ", "
-            ++ "arrowhead="
-            ++ vizArrowTypeToString arrowType
-            ++ "];\n\t"
-            -- ++ show self
-            ++ " "
-            ++ arrow
-            ++ " "
-
-data VizType = VizDiGraph | VizGraph
-
-instance Show VizType where
-    show :: VizType -> String
-    show ta =
-        vizTypeToString ta
-
-vizTypeToString :: VizType -> String
-vizTypeToString VizDiGraph = "digraph"
-vizTypeToString VizGraph = "graph"
-vizTypeToArrowString :: VizType -> String
-vizTypeToArrowString VizDiGraph = "->"
-vizTypeToArrowString VizGraph = "--"
+instance Show VizEdge where
+    show :: VizEdge -> String
+    show VizEdge{vizArrowType = vizArrowType, vizColor = vizColor, vizArrow = vizArrow, vizDistance = distance, vizSelf = VizNode{vizId = selfId}, vizOther = VizNode{vizId = otherId}} =
+        selfId ++ " " ++ vizArrow ++ " " ++ otherId
+            ++ "[label="
+            ++ wrapStrInDoubleQuote distance
+            ++ ", arrowhead="
+            ++ show vizArrowType
+            ++ ", color="
+            ++ vizColorToString vizColor
+            ++ ", style="
+            ++ show vizArrowType
+            ++ "]"
 
 data VizImage = VizImage
     { t :: VizType
@@ -313,26 +312,77 @@ data VizImage = VizImage
     , name :: String
     , path :: FilePath
     }
+
 instance Show VizImage where
     show :: VizImage -> String
     show VizImage{t = t, edges = edges, name = name} =
-        vizTypeToString t ++ " " ++ name
-            ++ "{ \n\t"
-            ++ "size =\"8.5,11\";\n\t"
-            ++ foldl (++) "\n\t" allEdges
-            ++ "\n}"
+        preamble ++ nodePropertyDefs ++ edgeStrs ++ "\n}"
       where
-        allEdges = map vizEdgeToStringBuilder edges
+        preamble = show t ++ " " ++ name ++ " {"
+        nodePropertyDefs =
+            concatNlTab $
+                map
+                    (\VizNode{vizId = vizId, nodeProps = props} -> vizId ++ " " ++ show props ++ "\n\t")
+                    (edgesToUniqueNodes edges)
+        edgeStrs = concatNlTab $ map (\x -> show x ++ "\n\t") edges
+        concatNlTab = foldl' (++) "\n\t"
 
-writeGraphViz :: FilePath -> VizImage -> IO ()
-writeGraphViz path image = writeFile path (show image)
+edgesToAllNodes :: [VizEdge] -> [VizNode]
+edgesToAllNodes =
+    concatMap
+        (\VizEdge{vizSelf = vizSelf, vizOther = vizOther} -> [vizSelf, vizOther])
 
-graphToVizImage :: Graph -> VizImage
-graphToVizImage
+edgesToUniqueNodes :: [VizEdge] -> [VizNode]
+edgesToUniqueNodes = unique . edgesToAllNodes
+
+data VizType = VizDiGraph | VizGraph
+
+vizArrowTypeToString :: VizArrowType -> String
+vizArrowTypeToString VizArrowNormal = wrapStrInDoubleQuote "normal"
+vizArrowTypeToString VizArrowCurve = wrapStrInDoubleQuote "curve"
+vizArrowTypeToString VizArrowICurve = wrapStrInDoubleQuote "icurve"
+vizArrowTypeToString VizArrowVee = wrapStrInDoubleQuote "vee"
+
+instance Show VizType where
+    show :: VizType -> String
+    show ta =
+        case ta of
+            VizDiGraph -> "digraph"
+            VizGraph -> "graph"
+
+vizTypeArrow :: VizType -> String
+vizTypeArrow VizDiGraph = "->"
+vizTypeArrow VizGraph = "--"
+
+writeGraphViz :: VizImage -> IO ()
+writeGraphViz image =
+    writeFile (path image) (show image)
+
+unDirGraphToVizImage :: FilePath -> Graph -> VizImage
+unDirGraphToVizImage
+    dir
     Graph
         { fileName = fileName
         , nodes = nodes
-        } = VizImage{}
+        } =
+        VizImage
+            { t = VizGraph
+            , edges = unique $ mapNodesToVizEdges nodes
+            , name = fileName
+            , path = dir </> fileName
+            }
+
+mapNodesToVizEdges :: [Node] -> [VizEdge]
+mapNodesToVizEdges =
+    map
+        ( \Node
+            { label = label
+            , adjacent = adjacent
+            } ->
+                VizEdge
+                    {
+                    }
+        )
 
 -- End Grapviz Section
 
