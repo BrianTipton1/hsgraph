@@ -8,6 +8,7 @@ import Control.Monad (filterM)
 import Data.Char (isAlpha, isDigit, toLower)
 import Data.Either (fromRight, rights)
 import Data.List (delete, find, foldl', minimumBy, partition)
+import Data.Maybe (catMaybes)
 import Data.Ord (comparing)
 import System.CPUTime (getCPUTime)
 import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
@@ -21,8 +22,14 @@ import Text.Printf (errorBadArgument)
 wrapStrInDoubleQuote :: String -> String
 wrapStrInDoubleQuote s = "\"" ++ s ++ "\""
 
+orangeifyString :: String -> String
+orangeifyString str = "\ESC[48;2;255;165;0m" ++ str ++ "\ESC[0m"
+
 redifyString :: String -> String
 redifyString s = "\ESC[31m" ++ s ++ "\ESC[0m"
+
+greenifyString :: String -> String
+greenifyString str = "\x1b[42m" ++ str ++ "\x1b[0m"
 
 unique :: Eq a => [a] -> [a]
 unique [] = []
@@ -164,12 +171,16 @@ maybeCommandErr cmd = do
 -- Report/Latex Stuff
 
 generateLatexImage :: FilePath -> String -> String
-generateLatexImage filePath caption = 
-  "\\begin{figure}[h]\n" ++
-  "  \\centering\n" ++
-  "  \\includegraphics[width=0.8\\textwidth]{" ++ filePath ++ "}\n" ++
-  "  \\caption{" ++ caption ++ "}\n" ++
-  "\\end{figure}"
+generateLatexImage filePath caption =
+  "\\begin{figure}[h]\n"
+    ++ "  \\centering\n"
+    ++ "  \\includegraphics[width=0.8\\textwidth]{"
+    ++ filePath
+    ++ "}\n"
+    ++ "  \\caption{"
+    ++ caption
+    ++ "}\n"
+    ++ "\\end{figure}"
 
 generateLatexTable :: DijkstraTable -> Label -> String -> String
 generateLatexTable (DijkstraTable rows) (Label startLabel) filename =
@@ -600,6 +611,31 @@ getStartingLabel cmds =
  where
   startNodes = [i | CmdStartNode i <- cmds]
 
+_checkForNode :: Label -> Graph -> IO (Maybe Graph)
+_checkForNode start graph = do
+  if not (null bad)
+    then return $ Just graph
+    else do
+      putStrLn $
+        orangeifyString $
+          "Warning supplied starting node " ++ wrapStrInDoubleQuote (show start) ++ " not in graph at " ++ directory graph </> fileName graph ++ "..."
+            ++ greenifyString "continuing execution for now ..."
+      return Nothing
+ where
+  (bad, good) = partition (\x -> label x == start) (nodes graph)
+
+checkGraphs :: Label -> [Graph] -> IO [Graph]
+checkGraphs label graphs = do
+  maybes <- catMaybes <$> mapM (_checkForNode label) graphs
+  if null maybes
+    then do
+      putStrLn $ redifyString "Error no suitable graphs supplied with the given starting node: " ++ show label
+      exitWith (ExitFailure 1)
+    else return maybes
+
+getGraphs :: [FilePath] -> Label -> IO [Graph]
+getGraphs allFiles start = mapM pathToGraph (unique allFiles) >>= checkGraphs start
+
 --- End Command Line Section
 
 -----------------Course Work------------------
@@ -695,7 +731,6 @@ main = do
   let dirs = mapCmdPathToPath (filter isCmdDirectory ops)
   readDirFiles <- allDirFiles dirs
   let allFiles = mapCmdPathToPath (filter isCmdFile ops) ++ readDirFiles
-  graphs <- mapM pathToGraph $ unique allFiles
+  graphs <- getGraphs allFiles startLabel
   ((fin, res), time) <- timeF $ dijkstra (head graphs) startLabel
-  -- putStrLn $ generateLatexTable fin startLabel (fileName $ head graphs)
   print fin
