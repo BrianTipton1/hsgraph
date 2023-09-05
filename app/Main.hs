@@ -618,20 +618,25 @@ _checkForNode start graph = do
     else do
       putStrLn $
         orangeifyString $
-          "Warning supplied starting node " ++ wrapStrInDoubleQuote (show start) ++ " not in graph at " ++ directory graph </> fileName graph ++ "..."
-            ++ greenifyString "continuing execution for now ..."
+          "Warning: supplied starting node " ++ wrapStrInDoubleQuote (show start) ++ " not in graph at " ++ graphPath ++ " ..."
+            ++ greenifyString
+              ( "\nSkipping "
+                  ++ graphPath
+                  ++ " and continuing execution for now ..."
+              )
       return Nothing
  where
   (bad, good) = partition (\x -> label x == start) (nodes graph)
+  graphPath = wrapStrInDoubleQuote $ directory graph </> fileName graph
 
 checkGraphs :: Label -> [Graph] -> IO [Graph]
 checkGraphs label graphs = do
-  maybes <- catMaybes <$> mapM (_checkForNode label) graphs
-  if null maybes
+  graphs <- catMaybes <$> mapM (_checkForNode label) graphs
+  if null graphs
     then do
-      putStrLn $ redifyString "Error no suitable graphs supplied with the given starting node: " ++ show label
+      putStrLn $ redifyString "Error no suitable graphs supplied have the given starting node: " ++ show label
       exitWith (ExitFailure 1)
-    else return maybes
+    else return graphs
 
 getGraphs :: [FilePath] -> Label -> IO [Graph]
 getGraphs allFiles start = mapM pathToGraph (unique allFiles) >>= checkGraphs start
