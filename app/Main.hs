@@ -31,6 +31,9 @@ redifyString s = "\ESC[31m" ++ s ++ "\ESC[0m"
 greenifyString :: String -> String
 greenifyString str = "\x1b[42m" ++ str ++ "\x1b[0m"
 
+blueifyString :: String -> String
+blueifyString str = "\ESC[44m" ++ str ++ "\ESC[0m"
+
 unique :: Eq a => [a] -> [a]
 unique [] = []
 unique (x : xs) = x : unique (filter (/= x) xs)
@@ -187,7 +190,6 @@ generateLatexTable (DijkstraTable rows) (Label startLabel) filename =
   unlines
     ( [ "\\begin{table}[h]"
       , "  \\centering"
-      , "  \\caption{Distances from Node " ++ startLabel ++ " to all other nodes using Dijkstra's Algorithm from the file " ++ filename ++ "}"
       , "  \\begin{tabular}{|c|c|}"
       , "    \\hline"
       , "    Node & Distance \\\\"
@@ -196,12 +198,40 @@ generateLatexTable (DijkstraTable rows) (Label startLabel) filename =
         ++ rowStrings
         ++ [ "    \\hline"
            , "  \\end{tabular}"
+           , "  \\caption{Distances from Node " ++ startLabel ++ " to all other nodes using Dijkstra's Algorithm from the file " ++ filename ++ "}"
            , "\\end{table}"
            ]
     )
  where
   rowStrings = map rowToLatex rows
   rowToLatex (DijkstraRow (Label lbl, Distance dist)) = "    " ++ lbl ++ " & " ++ show dist ++ " \\\\ \\hline"
+
+generateLatexPreamble :: String -> String
+generateLatexPreamble uname =
+  unlines
+    [ "\\documentclass{article}"
+    , "\\usepackage{fancyhdr}"
+    , "\\pagestyle{fancy}"
+    , ""
+    , "\\cfoot{Algorithms and report generation implementation by Brian Tipton}"
+    , "\\chead{Reports compiled by " ++ uname ++ "}"
+    , ""
+    , "\\begin{document}"
+    , ""
+    , "\\begin{center}"
+    , "\\large \\textbf {CS438 Search Algorithms} \\\\"
+    , "\\bigskip"
+    , ""
+    , "\\small {Report on Dijkstra's Algorithm,  Breadth First Search and Depth First Search}"
+    , "\\bigskip"
+    , ""
+    , "\\large \\textit {\\today}"
+    , "\\end{center}"
+    , "\\bigskip"
+    ]
+
+latexEndDoc :: String
+latexEndDoc = "\\end{document}"
 
 ---
 
@@ -634,7 +664,7 @@ checkGraphs label graphs = do
   graphs <- catMaybes <$> mapM (_checkForNode label) graphs
   if null graphs
     then do
-      putStrLn $ redifyString "Error no suitable graphs supplied have the given starting node: " ++ show label
+      putStrLn $ redifyString "Error no suitable graphs supplied have the given starting node: " ++ blueifyString (show label)
       exitWith (ExitFailure 1)
     else return graphs
 
@@ -682,7 +712,7 @@ newtype To = To Label deriving (Show)
 
 type TableState = DijkstraTable
 
-newtype Transition = Transition ((From, To), TableState) deriving (Show)
+newtype Transition = Transition ((From, To, Distance), TableState) deriving (Show)
 
 type TransitionSpace = [Either Transition Transition]
 
@@ -714,11 +744,11 @@ updateDistance :: Label -> Distance -> (DijkstraTable, TransitionSpace) -> Edge 
 updateDistance current (Distance currentDistance) (distanceTable, space) (Edge (destination, Distance weight))
   | newDistance < destinationDistance =
     ( DijkstraTable $ DijkstraRow (destination, Distance newDistance) : delete (DijkstraRow (destination, Distance destinationDistance)) (unwrapRows distanceTable)
-    , Right (Transition ((From current, To destination), distanceTable)) : space
+    , Right (Transition ((From current, To destination, Distance newDistance), distanceTable)) : space
     )
   | otherwise =
     ( distanceTable
-    , Left (Transition ((From current, To destination), distanceTable)) : space
+    , Left (Transition ((From current, To destination, Distance destinationDistance), distanceTable)) : space
     )
  where
   Just (Distance destinationDistance) = lookup destination (tableToTuples distanceTable)
@@ -738,4 +768,5 @@ main = do
   let allFiles = mapCmdPathToPath (filter isCmdFile ops) ++ readDirFiles
   graphs <- getGraphs allFiles startLabel
   ((fin, res), time) <- timeF $ dijkstra (head graphs) startLabel
-  print fin
+  uname <- whoami
+  putStrLn $ generateLatexPreamble uname ++ generateLatexTable fin startLabel "" ++ latexEndDoc
