@@ -1,3 +1,4 @@
+{-# LANGUAGE GADTs #-}
 {-# LANGUAGE InstanceSigs #-}
 {-# LANGUAGE LambdaCase #-}
 
@@ -11,7 +12,7 @@ import Data.List (delete, find, foldl', minimumBy, partition)
 import Data.Maybe (catMaybes)
 import Data.Ord (comparing)
 import System.CPUTime (getCPUTime)
-import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, listDirectory)
+import System.Directory (createDirectory, createDirectoryIfMissing, doesDirectoryExist, doesFileExist, getCurrentDirectory, listDirectory)
 import System.Environment (getArgs, getEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitFailure, exitWith)
 import System.FilePath.Posix (takeBaseName, takeDirectory, (</>))
@@ -62,6 +63,12 @@ _timer f = do
 timeF :: a -> IO (a, String)
 timeF f = _timer (evaluate f)
 
+unwrapBothEither :: Either p p -> p
+unwrapBothEither =
+  \case
+    Left a -> a
+    Right a -> a
+
 -- End Helpers Section
 
 -- Command IO
@@ -109,7 +116,9 @@ commandBuilder :: Command -> IO b -> IO b
 commandBuilder cmd action = do
   maybeGenerate <- maybeCommandErr cmd
   case maybeGenerate of
-    Nothing -> action
+    Nothing -> do
+      putStrLn $ "Running command: " ++ show cmd
+      action
     Just e -> error $ unwrapErr e
 
 data LatexOutFormat = Pdf | Png
@@ -127,6 +136,21 @@ pdfLatex texPath outDir fmt = commandBuilder PdfLatex $ do
       ["-output-directory=" ++ outDir, "-output-format=" ++ show fmt]
       ""
   return ec
+
+convert :: FilePath -> [FilePath] -> IO ExitCode
+convert outputDir files = commandBuilder Convert $ do
+  putStrLn $ "Converting files: " ++ show files ++ " into a gif at directory: " ++ outputDir
+  let outputFile = outputDir ++ "/result.gif"
+  (ec, stdout, stderr) <-
+    readProcessWithExitCode
+      "convert"
+      (["-delay", "100", "-loop", "0"] ++ files ++ [outputFile])
+      ""
+  putStrLn $ "STDOUT: " ++ stdout
+  putStrLn $ "STDERR: " ++ stderr
+  case ec of
+    ExitSuccess -> putStrLn "Sucessfully compiled to gif" >> return ec
+    _ -> putStrLn "Failed compiling to gif" >> return ec
 
 newtype UUID = UUID String
 
@@ -154,7 +178,7 @@ dot fileName fileType = commandBuilder Dot $ do
       , "-Gdpi=300"
       , fileName
       , "-o"
-      , fileName ++ "." ++ fileType
+      , head (split '.' fileName ) ++ "." ++ fileType
       ]
       ""
   return ec
@@ -185,8 +209,8 @@ generateLatexImage filePath caption =
     ++ "}\n"
     ++ "\\end{figure}"
 
-generateLatexTable :: DijkstraTable -> Label -> String -> String
-generateLatexTable (DijkstraTable rows) (Label startLabel) filename =
+generateLatexTable :: Table -> String
+generateLatexTable (Table rows) =
   unlines
     ( [ "\\begin{table}[h]"
       , "  \\centering"
@@ -198,13 +222,13 @@ generateLatexTable (DijkstraTable rows) (Label startLabel) filename =
         ++ rowStrings
         ++ [ "    \\hline"
            , "  \\end{tabular}"
-           , "  \\caption{Distances from Node " ++ startLabel ++ " to all other nodes using Dijkstra's Algorithm from the file " ++ filename ++ "}"
+           , "  \\caption{Table built using Dijkstra's Algorithm}"
            , "\\end{table}"
            ]
     )
  where
   rowStrings = map rowToLatex rows
-  rowToLatex (DijkstraRow (Label lbl, Distance dist)) = "    " ++ lbl ++ " & " ++ show dist ++ " \\\\ \\hline"
+  rowToLatex (Row (Label lbl, Distance dist)) = "    " ++ lbl ++ " & " ++ show dist ++ " \\\\ \\hline"
 
 generateLatexPreamble :: String -> String
 generateLatexPreamble uname =
@@ -213,8 +237,8 @@ generateLatexPreamble uname =
     , "\\usepackage{fancyhdr}"
     , "\\pagestyle{fancy}"
     , ""
-    , "\\cfoot{Algorithms and report generation implementation by Brian Tipton}"
-    , "\\chead{Reports compiled by " ++ uname ++ "}"
+    , "\\chead{Algorithms and Report generation implementation by Brian Tipton}"
+    , "\\cfoot{Report/images compiled by " ++ uname ++ "}"
     , ""
     , "\\begin{document}"
     , ""
@@ -222,7 +246,7 @@ generateLatexPreamble uname =
     , "\\large \\textbf {CS438 Search Algorithms} \\\\"
     , "\\bigskip"
     , ""
-    , "\\small {Report on Dijkstra's Algorithm,  Breadth First Search and Depth First Search}"
+    , "\\small {Report comparing Dijkstra's Algorithm, Breadth First Search and Depth First Search}"
     , "\\bigskip"
     , ""
     , "\\large \\textit {\\today}"
@@ -230,8 +254,17 @@ generateLatexPreamble uname =
     , "\\bigskip"
     ]
 
+mkSubsection :: Show a => a -> String
+mkSubsection algo = "\\subsection{" ++ show algo ++ "}"
+
+mkSection :: Show a => a -> String
+mkSection fileName = "\\section{" ++ show fileName ++ "}"
+
 latexEndDoc :: String
 latexEndDoc = "\\end{document}"
+
+algoSubSection :: Algorithm -> String
+algoSubSection = mkSubsection
 
 ---
 
@@ -265,8 +298,8 @@ fileToLines path = do
 
 createOutDirStructure :: String -> IO ()
 createOutDirStructure graphFileName = do
-  pwd <- getEnv "PWD"
-  fileExists <- doesFileExist (pwd </> results)
+  pwd <- System.Environment.getEnv "PWD"
+  fileExists <- System.Directory.doesFileExist (pwd </> results)
   if fileExists
     then error $ redifyString "A regular file exists at $PWD/results please move this to continue ..."
     else
@@ -280,7 +313,7 @@ createOutDirStructure graphFileName = do
  where
   results = "results"
   dirStructureBuilder pwd child =
-    createDirectoryIfMissing True (pwd </> results </> graphFileName </> child)
+    System.Directory.createDirectoryIfMissing True (pwd </> results </> graphFileName </> child)
 
 -- End File IO
 
@@ -290,14 +323,14 @@ getEdges acc list =
   if even $ length list
     then case list of
       (x : y : xs) ->
-        getEdges (Edge (Label x, Distance $ read y :: Distance) : acc) xs
+        getEdges (Edge{other = Label x, distanceToOther = Distance $ read y :: Distance} : acc) xs
       _ -> acc
     else errorBadArgument $ redifyString "Incorrect dims when parsing edges"
 
 lineToNode :: String -> Node
 lineToNode line =
   Node
-    { label = Label node
+    { identifier = Label node
     , adjacent = getEdges [] adjacent
     }
  where
@@ -332,11 +365,13 @@ data VizColor
   | VizBlack
   deriving (Eq)
 
-vizColorToString :: VizColor -> String
-vizColorToString VizBlue = wrapStrInDoubleQuote "blue"
-vizColorToString VizRed = wrapStrInDoubleQuote "red"
-vizColorToString VizGreen = wrapStrInDoubleQuote "green"
-vizColorToString VizBlack = wrapStrInDoubleQuote "black"
+instance Show VizColor where
+  show :: VizColor -> String
+  show = \case
+    VizBlue -> "blue"
+    VizRed -> "red"
+    VizGreen -> "green"
+    VizBlack -> "black"
 
 data VizEdgeType
   = VizEdgeSolid
@@ -368,91 +403,125 @@ instance Show VizArrowType where
   show e =
     vizArrowTypeToString e
 
-data VizNodeProps = VizNodeProps
-  { width :: Int
-  , height :: Int
-  , style :: String
-  , shape :: String
-  }
-  deriving (Eq)
+newtype VizNodeProps where
+  VizNodeProps ::
+    {style :: String} ->
+    VizNodeProps
 
 instance Show VizNodeProps where
   show :: VizNodeProps -> String
   show
     VizNodeProps
-      { width = width
-      , height = height
-      , style = style
-      , shape = shape
+      { style = style
       } =
-      "[style=" ++ style
-        ++ ", shape="
-        ++ shape
-        ++ ", width="
-        ++ show width
-        ++ ", height="
-        ++ show height
-        ++ "];"
+      "[style=" ++ style ++ "];"
 
-data VizNode = VizNode
-  { vizId :: String
-  , nodeProps :: VizNodeProps
-  }
-  deriving (Eq)
+data VizNode where
+  VizNode ::
+    { vizId :: Label
+    , properties :: VizNodeProps
+    , edges :: [VizEdge]
+    } ->
+    VizNode
 
-data VizEdge = VizEdge
-  { vizSelf :: VizNode
-  , vizOther :: VizNode
-  , vizArrowType :: VizArrowType
-  , vizArrow :: String
-  , vizEdgeType :: VizEdgeType
-  , vizDistance :: String
-  , vizColor :: VizColor
-  }
-  deriving (Eq)
+data VizEdge where
+  VizEdge ::
+    { vizOther :: Label
+    , vizArrowType :: VizArrowType
+    , vizArrow :: String
+    , vizEdgeType :: VizEdgeType
+    , vizDistance :: Distance
+    , vizColor :: VizColor
+    } ->
+    VizEdge
 
-instance Show VizEdge where
-  show :: VizEdge -> String
-  show VizEdge{vizArrowType = vizArrowType, vizColor = vizColor, vizArrow = vizArrow, vizDistance = distance, vizSelf = VizNode{vizId = selfId}, vizOther = VizNode{vizId = otherId}} =
-    selfId ++ " " ++ vizArrow ++ " " ++ otherId
-      ++ "[label="
-      ++ wrapStrInDoubleQuote distance
-      ++ ", arrowhead="
-      ++ show vizArrowType
-      ++ ", color="
-      ++ vizColorToString vizColor
-      ++ ", style="
-      ++ show vizArrowType
-      ++ "]"
-
-data VizImage = VizImage
-  { t :: VizType
-  , edges :: [VizEdge]
-  , name :: String
-  , path :: FilePath
-  }
+data VizImage where
+  VizImage ::
+    { t :: VizType
+    , vizNodes :: [VizNode]
+    , name :: String
+    , path :: FilePath
+    } ->
+    VizImage
 
 instance Show VizImage where
   show :: VizImage -> String
-  show VizImage{t = t, edges = edges, name = name} =
-    preamble ++ nodePropertyDefs ++ edgeStrs ++ "\n}"
+  show
+    VizImage
+      { t = t
+      , vizNodes = vizNodes
+      , name = name
+      , path = path
+      } =
+      show t ++ " " ++ name ++ "{\n\t"
+        ++ nodeProps vizNodes
+        ++ "\n\t"
+        ++ vizNodesString vizNodes
+        ++ "\n"
+        ++ "}"
+     where
+      nodeProps nodes =
+        foldl' (++) "" $ map (\VizNode{vizId = vizId, properties = properties} -> "\n\t" ++ label vizId ++ show properties) nodes
+      vizNodesString :: [VizNode] -> String
+      vizNodesString = foldl' (++) "" . map vizNodeToString
+      vizNodeToString :: VizNode -> String
+      vizNodeToString
+        VizNode
+          { vizId = vizId
+          , properties = properties
+          , edges = edges
+          } = nodeEdge vizId edges
+      nodeEdge :: Label -> [VizEdge] -> String
+      nodeEdge parent edges =
+        foldl' (++) "" $
+          map
+            ( \VizEdge
+                { vizOther = vizOther
+                , vizArrowType = vizArrowType
+                , vizArrow = vizArrow
+                , vizEdgeType = vizEdgeType
+                , vizDistance = vizDistance
+                , vizColor = vizColor
+                } ->
+                  "\n\t" ++ label parent ++ " " ++ vizArrow ++ " " ++ label vizOther
+                    ++ "[label="
+                    ++ wrapStrInDoubleQuote (show $ distance vizDistance)
+                    ++ ", color="
+                    ++ show vizColor
+                    ++ "];"
+            )
+            edges
+
+node2VizNode :: VizColor -> Bool -> Node -> VizNode
+node2VizNode
+  color
+  show
+  Node
+    { identifier = identifier
+    , adjacent = adjacent
+    } =
+    VizNode
+      { vizId = identifier
+      , edges = mapEdges adjacent
+      , properties = VizNodeProps{style = if show then wrapStrInDoubleQuote "" else "invis"}
+      }
    where
-    preamble = show t ++ " " ++ name ++ " {"
-    nodePropertyDefs =
-      concatNlTab $
-        map
-          (\VizNode{vizId = vizId, nodeProps = props} -> vizId ++ " " ++ show props ++ "\t")
-          (edgesToUniqueNodes edges)
-    edgeStrs = concatNlTab $ map show edges
-    concatNlTab = foldl' (\x y -> x ++ "\n\t" ++ y) ""
-
-edgesToAllNodes :: [VizEdge] -> [VizNode]
-edgesToAllNodes =
-  concatMap
-    (\VizEdge{vizSelf = vizSelf, vizOther = vizOther} -> [vizSelf, vizOther])
-
-edgesToUniqueNodes :: [VizEdge] -> [VizNode]
-edgesToUniqueNodes = unique . edgesToAllNodes
+    mapEdges :: [Edge] -> [VizEdge]
+    mapEdges =
+      map
+        ( \Edge
+            { other = other
+            , distanceToOther = distanceToOther
+            } ->
+              VizEdge
+                { vizOther = other
+                , vizArrowType = VizArrowNormal
+                , vizArrow = "->"
+                , vizEdgeType = VizEdgeSolid
+                , vizDistance = distanceToOther
+                , vizColor = color
+                }
+        )
 
 data VizType = VizDiGraph | VizGraph
 
@@ -472,10 +541,6 @@ instance Show VizType where
 vizTypeArrow :: VizType -> String
 vizTypeArrow VizDiGraph = "->"
 vizTypeArrow VizGraph = "--"
-
-writeGraphViz :: VizImage -> IO ()
-writeGraphViz image =
-  writeFile (path image) (show image)
 
 -- End Grapviz Section
 
@@ -562,8 +627,8 @@ strToOps s
   | s `elem` cmdNoGifList = return CmdNoGif
   | s `elem` cmdStartNode startNode = return $ CmdStartNode startNode
   | otherwise = do
-    pathExists <- doesFileExist s
-    directory <- doesDirectoryExist s
+    pathExists <- System.Directory.doesFileExist s
+    directory <- System.Directory.doesDirectoryExist s
     case (pathExists, directory) of
       (True, False) -> return $ CmdPath $ CmdFilePath s
       (False, True) -> return $ CmdPath $ CmdDirectoryPath s
@@ -597,14 +662,14 @@ _allDirFiles acc dirs =
     [] -> return acc
     [x] ->
       ( \_ -> do
-          allContents <- listDirectory x
+          allContents <- System.Directory.listDirectory x
           files <- dirFilter allContents
           return $ acc ++ map (x </>) files
       )
         ()
     (x : xs) ->
       ( \_ -> do
-          allContents <- listDirectory x
+          allContents <- System.Directory.listDirectory x
           files <- dirFilter allContents
           _allDirFiles (acc ++ map (x </>) files) xs
       )
@@ -612,7 +677,7 @@ _allDirFiles acc dirs =
  where
   isFileM :: FilePath -> IO Bool
   isFileM path = do
-    result <- doesDirectoryExist path
+    result <- System.Directory.doesDirectoryExist path
     return (not result)
   dirFilter :: [FilePath] -> IO [FilePath]
   dirFilter = filterM isFileM
@@ -656,7 +721,7 @@ _checkForNode start graph = do
               )
       return Nothing
  where
-  (bad, good) = partition (\x -> label x == start) (nodes graph)
+  (bad, good) = partition (\x -> identifier x == start) (nodes graph)
   graphPath = wrapStrInDoubleQuote $ directory graph </> fileName graph
 
 checkGraphs :: Label -> [Graph] -> IO [Graph]
@@ -676,15 +741,27 @@ getGraphs allFiles start = mapM pathToGraph (unique allFiles) >>= checkGraphs st
 -----------------Course Work------------------
 
 -- Custom Types relating to the assignment
-newtype Distance
-  = Distance Int
+data Algorithm = Dijkstras | BFS | DFS
+
+instance Show Algorithm where
+  show :: Algorithm -> String
+  show =
+    \case
+      Dijkstras -> "Dijkstra's Algorithm"
+      BFS -> "Breadth First Search"
+      DFS -> "Depth First Search"
+
+newtype Distance where
+  Distance :: {distance :: Int} -> Distance
   deriving (Eq, Ord)
 
-newtype Label
-  = Label String
+newtype Label where
+  Label :: {label :: String} -> Label
   deriving (Eq, Ord)
 
-newtype Edge = Edge (Label, Distance) deriving (Show)
+data Edge where
+  Edge :: {other :: Label, distanceToOther :: Distance} -> Edge
+  deriving (Show)
 
 data Graph = Graph
   { nodes :: [Node]
@@ -695,68 +772,176 @@ data Graph = Graph
   deriving (Show)
 
 data Node = Node
-  { label :: Label
+  { identifier :: Label
   , adjacent :: [Edge]
   }
 
 --- End custom types section
 
--- Dijkstra Specific
-newtype DijkstraRow = DijkstraRow (Label, Distance) deriving (Show, Eq)
+-- Types Relating to recording the flow of the algorithms
+newtype Row where
+  Row :: {row :: (Label, Distance)} -> Row
+  deriving (Show, Eq)
 
-newtype DijkstraTable = DijkstraTable [DijkstraRow] deriving (Show)
+newtype Table where
+  Table :: {rows :: [Row]} -> Table
+  deriving (Show)
 
-newtype From = From Label deriving (Show)
+newtype From where
+  From :: Label -> From
+  deriving (Show)
 
-newtype To = To Label deriving (Show)
+newtype To where
+  To :: Label -> To
+  deriving (Show)
 
-type TableState = DijkstraTable
+newtype Count where
+  Count :: {count :: Int} -> Count
+  deriving (Show)
 
-newtype Transition = Transition ((From, To, Distance), TableState) deriving (Show)
+type TableState = Table
+
+data Transition where
+  Transition ::
+    { from :: From
+    , to :: To
+    , transitionDistance :: Distance
+    , transitionCount :: Count
+    , state :: TableState
+    } ->
+    Transition
+  deriving (Show)
 
 type TransitionSpace = [Either Transition Transition]
 
-rowToTuple :: DijkstraRow -> (Label, Distance)
-rowToTuple (DijkstraRow (l, d)) = (l, d)
+tableToTuples :: Table -> [(Label, Distance)]
+tableToTuples t = map row $ rows t
 
-unwrapRows :: DijkstraTable -> [DijkstraRow]
-unwrapRows (DijkstraTable rows) = rows
+eitherTransitionCount :: Either Transition Transition -> Count
+eitherTransitionCount t = count
+ where
+  count = transitionCount $ unwrapBothEither t
 
-tableToTuples :: DijkstraTable -> [(Label, Distance)]
-tableToTuples t = map rowToTuple $ unwrapRows t
+-- End Recording Types
 
-dijkstra :: Graph -> Label -> (DijkstraTable, TransitionSpace)
+-- Dijkstra Specific
+dijkstra :: Graph -> Label -> (Table, TransitionSpace)
 dijkstra graph start =
-  let initial = DijkstraTable [DijkstraRow (label, if label == start then Distance 0 else Distance maxBound) | Node label _ <- nodes graph]
+  let initial = Table [Row (label, if label == start then Distance 0 else Distance maxBound) | Node label _ <- nodes graph]
    in dijkstra' graph [] (initial, [])
+ where
+  dijkstra' :: Graph -> [Label] -> (Table, TransitionSpace) -> (Table, TransitionSpace)
+  dijkstra' _ visited (table, space)
+    | all ((`elem` visited) . fst) (tableToTuples table) = (table, space)
+  dijkstra' graph visited (table, space) =
+    let unvisited = filter (\(l, _) -> l `notElem` visited) (tableToTuples table)
+        (nextLabel, nextDistance) = minimumBy (comparing snd) unvisited
+        Just (Node _ adjacents) = find (\(Node label _) -> label == nextLabel) (nodes graph)
+        updatedDistances = foldl' (updateDistance nextLabel nextDistance) (table, space) adjacents
+     in dijkstra' graph (nextLabel : visited) updatedDistances
 
-dijkstra' :: Graph -> [Label] -> (DijkstraTable, TransitionSpace) -> (DijkstraTable, TransitionSpace)
-dijkstra' _ visited (table, space)
-  | all ((`elem` visited) . fst) (tableToTuples table) = (table, space)
-dijkstra' graph visited (table, space) =
-  let unvisited = filter (\(l, _) -> l `notElem` visited) (tableToTuples table)
-      (nextLabel, nextDistance) = minimumBy (comparing snd) unvisited
-      Just (Node _ adjacents) = find (\(Node label _) -> label == nextLabel) (nodes graph)
-      updatedDistances = foldl' (updateDistance nextLabel nextDistance) (table, space) adjacents
-   in dijkstra' graph (nextLabel : visited) updatedDistances
-
-updateDistance :: Label -> Distance -> (DijkstraTable, TransitionSpace) -> Edge -> (DijkstraTable, TransitionSpace)
-updateDistance current (Distance currentDistance) (distanceTable, space) (Edge (destination, Distance weight))
+updateDistance :: Label -> Distance -> (Table, TransitionSpace) -> Edge -> (Table, TransitionSpace)
+updateDistance current (Distance currentDistance) (distanceTable, space) Edge{other = destination, distanceToOther = Distance weight}
   | newDistance < destinationDistance =
-    ( DijkstraTable $ DijkstraRow (destination, Distance newDistance) : delete (DijkstraRow (destination, Distance destinationDistance)) (unwrapRows distanceTable)
-    , Right (Transition ((From current, To destination, Distance newDistance), distanceTable)) : space
+    ( Table $ Row (destination, Distance newDistance) : delete (Row (destination, Distance destinationDistance)) (rows distanceTable)
+    , Right
+        Transition
+          { from = From current
+          , to = To destination
+          , transitionDistance = Distance newDistance
+          , transitionCount = currCount
+          , state = distanceTable
+          } :
+      space
     )
   | otherwise =
     ( distanceTable
-    , Left (Transition ((From current, To destination, Distance destinationDistance), distanceTable)) : space
+    , Left
+        Transition
+          { from = From current
+          , to = To destination
+          , transitionDistance = Distance destinationDistance
+          , transitionCount = currCount
+          , state = distanceTable
+          } :
+      space
     )
  where
   Just (Distance destinationDistance) = lookup destination (tableToTuples distanceTable)
   newDistance = currentDistance + weight
+  currCount =
+    if null space
+      then Count 1
+      else Count $ count (eitherTransitionCount (head space)) + 1
 
 -- End Dijkstra Stuff
 
+
 -------------- End Course Work Section ---------------
+transitionsToImages :: Graph -> TransitionSpace -> [VizImage]
+transitionsToImages graph transition =
+  transitionsToImages' graph transition []
+ where
+  transitionsToImages' :: Graph -> TransitionSpace -> [VizImage] -> [VizImage]
+  transitionsToImages' _ [] acc = acc
+  transitionsToImages' graph@Graph{nodes = nodes, fileName = fileName, directory = directory} (transition : rest) acc =
+    transitionsToImages' graph rest (fixImage start transition : acc)
+   where
+    start =
+      if null acc
+        then
+          VizImage
+            { t = VizDiGraph
+            , vizNodes = map (node2VizNode VizBlack True) nodes
+            , name = fileName
+            , path = directory
+            }
+        else head acc
+    fixImage :: VizImage -> Either Transition Transition -> VizImage
+    fixImage img = \case
+      Left t -> fixFromTransition t VizRed img
+      Right t -> fixFromTransition t VizGreen img
+    fixFromTransition
+      Transition
+        { from = from
+        , to = to
+        , transitionDistance = transitionDistance
+        , transitionCount = transitionCount
+        , state = state
+        }
+      color
+      img = replaceVizColor color img from to
+    replaceVizColor :: VizColor -> VizImage -> From -> To -> VizImage
+    replaceVizColor newColor image@VizImage{vizNodes = nodes} (From from) (To to) =
+      let newNodes = map (replaceEdgeColor from to) nodes
+       in image{vizNodes = newNodes}
+     where
+      replaceEdgeColor parent child node@VizNode{vizId = nodeId, edges = es}
+        | nodeId == parent = node{edges = map (\e -> if vizOther e == child then e{vizColor = newColor} else e) es}
+        | otherwise = node
+
+compileAllImages :: [VizImage] -> IO ()
+compileAllImages images = do
+  pwd <- getCurrentDirectory
+  pngFiles <- sequence [doDotAfterWrite (index + 1) img pwd | (index, img) <- zip [0 ..] images]
+  exitCode <- convert (concat [pwd, "/results/", name $ head images]) pngFiles
+  putStrLn $ "GIF compilation returned: " ++ show exitCode
+ where
+  writeSingleImage :: Int -> VizImage -> FilePath -> IO ()
+  writeSingleImage index img@VizImage{name = name} pwd = do
+    let dirPath = concat [pwd, "/results/", name, "/"]
+    createDirectoryIfMissing True dirPath
+    let filePath = concat [dirPath, name, show index, ".dot"]
+    writeFile filePath (show img)
+    putStrLn $ "Written file: " ++ filePath
+
+  doDotAfterWrite :: Int -> VizImage -> FilePath -> IO FilePath
+  doDotAfterWrite index img pwd = do
+    let dotFileName = concat [pwd, "/results/", name img, "/", name img, show index, ".dot"]
+    let pngFileName = concat [pwd, "/results/", name img, "/", name img, show index, ".png"]
+    writeSingleImage index img pwd
+    _ <- dot dotFileName "png"
+    return pngFileName
 
 main :: IO ()
 main = do
@@ -766,7 +951,10 @@ main = do
   let dirs = mapCmdPathToPath (filter isCmdDirectory ops)
   readDirFiles <- allDirFiles dirs
   let allFiles = mapCmdPathToPath (filter isCmdFile ops) ++ readDirFiles
+  let resultPaths = map takeBaseName allFiles
   graphs <- getGraphs allFiles startLabel
   ((fin, res), time) <- timeF $ dijkstra (head graphs) startLabel
-  uname <- whoami
-  putStrLn $ generateLatexPreamble uname ++ generateLatexTable fin startLabel "" ++ latexEndDoc
+  let headGraphs = head graphs
+  let imgs = reverse $ transitionsToImages headGraphs (reverse res)
+  mapM_ createOutDirStructure resultPaths >> compileAllImages imgs
+  print "Done"
