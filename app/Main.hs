@@ -116,9 +116,7 @@ commandBuilder :: Command -> IO b -> IO b
 commandBuilder cmd action = do
   maybeGenerate <- maybeCommandErr cmd
   case maybeGenerate of
-    Nothing -> do
-      putStrLn $ "Running command: " ++ show cmd
-      action
+    Nothing -> action
     Just e -> error $ unwrapErr e
 
 data LatexOutFormat = Pdf | Png
@@ -139,18 +137,18 @@ pdfLatex texPath outDir fmt = commandBuilder PdfLatex $ do
 
 convert :: FilePath -> [FilePath] -> IO ExitCode
 convert outputDir files = commandBuilder Convert $ do
-  putStrLn $ "Converting files: " ++ show files ++ " into a gif at directory: " ++ outputDir
-  let outputFile = outputDir ++ "/result.gif"
+  putStrLn $ "Attempting conversion of the following image files to gif: " ++ foldl' (\acc x -> acc ++ "\n" ++ x) "" files ++ "\nResult gif being saved at: " ++ finalDir
+  let outputFile = finalDir </> "result.gif"
   (ec, stdout, stderr) <-
     readProcessWithExitCode
       "convert"
       (["-delay", "100", "-loop", "0"] ++ files ++ [outputFile])
       ""
-  putStrLn $ "STDOUT: " ++ stdout
-  putStrLn $ "STDERR: " ++ stderr
   case ec of
-    ExitSuccess -> putStrLn "Sucessfully compiled to gif" >> return ec
-    _ -> putStrLn "Failed compiling to gif" >> return ec
+    ExitSuccess -> putStrLn "Sucessfully converted to gif" >> return ec
+    _ -> putStrLn (redifyString "Failed conversion to gif") >> return ec
+ where
+  finalDir = outputDir </> "finalImages"
 
 newtype UUID = UUID String
 
@@ -159,7 +157,7 @@ instance Show UUID where
   show (UUID uuid) = uuid
 
 whoami :: IO String
-whoami = commandBuilder UUIDgen $ do
+whoami = commandBuilder Whoami $ do
   init <$> readProcess (show Whoami) [] ""
 
 uuidgen :: IO UUID
@@ -169,19 +167,22 @@ uuidgen = commandBuilder UUIDgen $ do
   let (alpha, numeric) = partition isAlpha removedHyphens
   return $ UUID $ alpha ++ numeric
 
-dot :: String -> String -> IO ExitCode
-dot fileName fileType = commandBuilder Dot $ do
+dot :: String -> FilePath -> FilePath -> String -> IO ExitCode
+dot fileName directory outDir fileType = commandBuilder Dot $ do
   (ec, _, _) <-
     readProcessWithExitCode
       (show Dot)
       [ "-T" ++ fileType
       , "-Gdpi=300"
-      , fileName
+      , infile
       , "-o"
-      , head (split '.' fileName ) ++ "." ++ fileType
+      , outfile
       ]
       ""
   return ec
+ where
+  infile = directory </> (fileName ++ ".dot")
+  outfile = outDir </> (fileName ++ ".png")
 
 maybeCommandErr :: Command -> IO (Maybe CommandErrors)
 maybeCommandErr cmd = do
@@ -876,7 +877,6 @@ updateDistance current (Distance currentDistance) (distanceTable, space) Edge{ot
 
 -- End Dijkstra Stuff
 
-
 -------------- End Course Work Section ---------------
 transitionsToImages :: Graph -> TransitionSpace -> [VizImage]
 transitionsToImages graph transition =
@@ -924,24 +924,30 @@ compileAllImages :: [VizImage] -> IO ()
 compileAllImages images = do
   pwd <- getCurrentDirectory
   pngFiles <- sequence [doDotAfterWrite (index + 1) img pwd | (index, img) <- zip [0 ..] images]
-  exitCode <- convert (concat [pwd, "/results/", name $ head images]) pngFiles
-  putStrLn $ "GIF compilation returned: " ++ show exitCode
+  convert (pwd </> "results" </> name (head images)) pngFiles
+  return ()
  where
-  writeSingleImage :: Int -> VizImage -> FilePath -> IO ()
-  writeSingleImage index img@VizImage{name = name} pwd = do
-    let dirPath = concat [pwd, "/results/", name, "/"]
-    createDirectoryIfMissing True dirPath
-    let filePath = concat [dirPath, name, show index, ".dot"]
-    writeFile filePath (show img)
-    putStrLn $ "Written file: " ++ filePath
-
   doDotAfterWrite :: Int -> VizImage -> FilePath -> IO FilePath
   doDotAfterWrite index img pwd = do
-    let dotFileName = concat [pwd, "/results/", name img, "/", name img, show index, ".dot"]
-    let pngFileName = concat [pwd, "/results/", name img, "/", name img, show index, ".png"]
-    writeSingleImage index img pwd
-    _ <- dot dotFileName "png"
-    return pngFileName
+    dirPath <- graphDirResPath (name img)
+    let intVizPath = dirPath </> "intermediateGraphVizFiles"
+    let intPngPath = dirPath </> "intermediteImages"
+    let baseFileName = name img ++ show index
+    writeSingleImage baseFileName img intVizPath
+    _ <- dot baseFileName intVizPath intPngPath "png"
+    return (intPngPath </> (baseFileName ++ ".png"))
+
+writeSingleImage :: String -> VizImage -> FilePath -> IO ()
+writeSingleImage fileName img dirPath = do
+  createDirectoryIfMissing True dirPath
+  let filePath = dirPath </> (fileName ++ ".dot")
+  writeFile filePath (show img)
+  putStrLn $ "Written file: " ++ filePath
+
+graphDirResPath :: FilePath -> IO FilePath
+graphDirResPath name = do
+  pwd <- System.Environment.getEnv "PWD"
+  return $ pwd </> "results" </> name </> ""
 
 main :: IO ()
 main = do
@@ -957,4 +963,4 @@ main = do
   let headGraphs = head graphs
   let imgs = reverse $ transitionsToImages headGraphs (reverse res)
   mapM_ createOutDirStructure resultPaths >> compileAllImages imgs
-  print "Done"
+  putStrLn "Finished Generation!"
