@@ -11,6 +11,9 @@ ghc -o hsgraph ./app/Main.hs
 ## Instructor Usage
 - All commands needed for full generation are available and tested on home.cs.siue.edu
 - The following command will generate a single PDF report and graph(s) to accompany each file found/provided to the command
+- WARNING
+  - Do not try and run the gif generation on big graphs unless you have lots of ram, `convert` from imagemagick will steal it all
+  - Tested gif generation on home server with supplied `graphPosLittle` and it worked fine
 ```bash
 ./hsgraph /path/to/my/(graphFile|graphFilledDir) /optionally/other/file(s) -g
 ```
@@ -27,7 +30,6 @@ ghc -o hsgraph ./app/Main.hs
         - `dot` -> Builds a "prettier" graph but ignores the len attribute on edges
         - `convert` -> Builds gifs from the images
 - Other Builtins/Standard
-    - `uuidgen`
     - `which`
 
 ## Clone + Cabal Usage 
