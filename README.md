@@ -10,12 +10,14 @@ ghc -o hsgraph ./app/Main.hs
 ```
 ## Instructor Usage
 - All commands needed for full generation are available and tested on home.cs.siue.edu
-- The following command will generate a single PDF report and graph(s) to accompany each file found/provided to the command
+- The following command will generate a single PDF report and gif(s) to accompany each file found/provided to the command
 - WARNING
-  - Do not try and run the gif generation on big graphs unless you have lots of ram, `convert` from imagemagick will steal it all
-  - Tested gif generation on home server with supplied `graphPosLittle` and it worked fine
+  - Do not try and run the gif generation on big graphs unless you have lots of ram
+    - `convert` command used to build the GIF will steal all ram and cause a crash
+  - Tested gif generation on siue home server with supplied `graphPosLittle` and it worked fine
+- The report generation generates distance tables for graphs <= 20 nodes. The table spans off the page if I don't do this and dynamically fixing is tricky
 ```bash
-./hsgraph /path/to/my/(graphFile|graphFilledDir) /optionally/other/file(s) -g
+./hsgraph /path/to/my/(graphFile|graphFilledDir) /optionally/other/file(s) -r -g
 ```
 
 ### Chat GPT
@@ -31,11 +33,12 @@ ghc -o hsgraph ./app/Main.hs
         - `convert` -> Builds gifs from the images
 - Other Builtins/Standard
     - `which`
+    - `whoami`
 
 ## Clone + Cabal Usage 
 ```bash
 git clone git@github.com:BrianTipton1/hsgraph.git
-cabal run hsgraph -- "/path/to/my/(graphFile|graphFilledDir)"
+cabal run hsgraph -- "/path/to/my/(graphFile|graphFilledDir) -r -g"
 ```
 
 ### Help Text
@@ -46,17 +49,20 @@ cabal run hsgraph -- "/path/to/my/(graphFile|graphFilledDir)"
 Usage: hsgraph [OPTIONS] (FILE|DIR)*
 
 Description:
-  hsgraph is a command-line utility for parsing and analyzing graphs using Dijkstra's Algorithm, BFS and DFS. It operates on file(s) or multiple files within a directory(s). Optionally, it can also generate GraphViz graphs. The report and images are generated to $PWD/results
+    hsgraph is a command-line utility for parsing and analyzing graphs using Dijkstra's Algorithm, BFS and DFS.
+    It operates on file(s) or multiple files within a directory(s).
+    It can also generate gifs following Dijkstra's Algorithm using GraphViz graphs.
+    The report and images for a given file are generated to $PWD/results/FILE_NAME/*
 
 Options:
   -h, --help
     Show this help message and exit.
 
-  -g, --graph
-    Generate VizGraphs for the selected file(s).
+  -g, --gif
+    Generate a gif following Dijkstra's Algorithm for the specified file(s).
 
-  -ng, --no-gif
-    Do not generate GIFs from the image files. This option can only be used in conjunction with the -g/--graph option.
+  -r, --report
+    Generate the report for the assignment on the specified files
 
   -s=2, --start-node=2
     Optionally supply a node to start algorithms from
@@ -67,22 +73,32 @@ Arguments:
 
 Examples:
   hsgraph myfile.txt
-  hsgraph myfile.txt /path/to/directory
+  hsgraph myfile.txt /path/to/directory -s=5
   hsgraph /path/to/directory
   hsgraph /path/to/directory -g
   hsgraph myfile.txt -g
-  hsgraph /path/to/directory -g --no-gif
-  hsgraph myfile.txt -g --no-gif
+  hsgraph /path/to/directory -g --report
+  hsgraph myfile.txt -g -r
 
 Note:
   Ensure that the file(s) or directory(s) supplied only contains files that hsgraph can parse.
-  The -ng/--no-gif option can only be used in conjunction with the -g/--graph option.
+  Commands required for GIF generation is dot, convert
+  Commands required for Report generation is dot, pdflatex
 ```
 
-### For future me if looking for libs/resources I found
-- Resources
+### For future me
+- Resources Used
   - [graphviz](https://graphviz.org/)
-- Packages
+- Interesting Packages
   - [cmdargs](https://hackage.haskell.org/package/cmdargs)
   - [graphviz](https://hackage.haskell.org/package/graphviz)
   - [HaTeX](https://hackage.haskell.org/package/HaTeX)
+- Things I wanted to do but couldn't do to various factors (Time/Runtime Environment/Accessibility)
+  - Not have all code in one file
+  - Better GraphViz implementation
+    - Conversion of `Graph` type to `VizImage` is sloppy
+    - Better structure of the `VizImage` and child types
+  - Possibly some redundant code if genericization was thought through better
+  - Parallization of image compilation using `dot`
+  - Different GIF conversion implementation to accommodate a larger number of images
+  - Nicer report generation. Also sloppy

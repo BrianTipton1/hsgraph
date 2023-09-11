@@ -5,10 +5,12 @@
 module Main where
 
 import Control.Exception (Exception, evaluate)
-import Control.Monad (filterM)
+import Control.Monad (filterM, when)
 import Data.Char (isAlpha, isDigit, toLower)
 import Data.Either (fromRight, rights)
-import Data.List (delete, find, foldl', minimumBy, partition)
+import Data.List (delete, find, foldl', minimumBy, partition, sortBy, sortOn)
+import Data.Map (Map, fromList, toList)
+import qualified Data.Map as Map
 import Data.Maybe (catMaybes)
 import Data.Ord (comparing)
 import System.CPUTime (getCPUTime)
@@ -17,7 +19,7 @@ import System.Environment (getArgs, getEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitFailure, exitWith)
 import System.FilePath.Posix (takeBaseName, takeDirectory, (</>))
 import System.Process (readProcess, readProcessWithExitCode)
-import Text.Printf (errorBadArgument)
+import Text.Printf (errorBadArgument, printf)
 
 -- Helpers
 wrapStrInDoubleQuote :: String -> String
@@ -47,41 +49,29 @@ split delimiter (x : xs)
  where
   rest = split delimiter xs
 
-_timer :: IO a -> IO (a, String)
-_timer f = do
-  startTime <- getCPUTime
-  result <- f
-  endTime <- getCPUTime
-  let diffPico = fromIntegral (endTime - startTime)
-  let timeStr
-        | diffPico < 1000 = "$$" ++ show diffPico ++ " ps$$"
-        | diffPico < 10 ^ 6 = "$$" ++ show (diffPico / 10 ^ 3) ++ " ns$$"
-        | diffPico < 10 ^ 9 = "$$" ++ show (diffPico / 10 ^ 6) ++ " \\mu s$$"
-        | otherwise = "$$" ++ show (diffPico / 10 ^ 9) ++ " ms$$"
-  return (result, timeStr)
-
-timeF :: a -> IO (a, String)
-timeF f = _timer (evaluate f)
-
 unwrapBothEither :: Either p p -> p
 unwrapBothEither =
   \case
     Left a -> a
     Right a -> a
 
+countRights :: [Either a b] -> Int
+countRights = length . filter isRight
+ where
+  isRight (Right _) = True
+  isRight _ = False
+
 -- End Helpers Section
 
 -- Command IO
 data CommandErrors
-  = UUIDNotFound String
-  | DotNotFound String
+  = DotNotFound String
   | ConvertNotFound String
   | PdfLatexNotFound String
   | WhoamiNotFound String
 
 data Command
-  = UUIDgen
-  | Dot
+  = Dot
   | Convert
   | PdfLatex
   | Whoami
@@ -89,7 +79,6 @@ data Command
 instance Show Command where
   show :: Command -> String
   show = \case
-    UUIDgen -> "uuidgen"
     Dot -> "dot"
     Convert -> "convert"
     PdfLatex -> "pdflatex"
@@ -97,7 +86,6 @@ instance Show Command where
 
 unwrapErr :: CommandErrors -> String
 unwrapErr = \case
-  UUIDNotFound e -> e
   DotNotFound e -> e
   ConvertNotFound e -> e
   PdfLatexNotFound e -> e
@@ -106,7 +94,6 @@ unwrapErr = \case
 commandToErr :: Command -> String -> CommandErrors
 commandToErr =
   \case
-    UUIDgen -> UUIDNotFound
     Dot -> DotNotFound
     Convert -> ConvertNotFound
     PdfLatex -> PdfLatexNotFound
@@ -131,7 +118,7 @@ pdfLatex texPath outDir fmt = commandBuilder PdfLatex $ do
   (ec, _, _) <-
     readProcessWithExitCode
       (show PdfLatex)
-      ["-output-directory=" ++ outDir, "-output-format=" ++ show fmt]
+      ["-output-format=" ++ show fmt, "-output-directory=" ++ outDir, show texPath]
       ""
   return ec
 
@@ -150,22 +137,9 @@ convert outputDir files = commandBuilder Convert $ do
  where
   finalDir = outputDir </> "finalImages"
 
-newtype UUID = UUID String
-
-instance Show UUID where
-  show :: UUID -> String
-  show (UUID uuid) = uuid
-
 whoami :: IO String
 whoami = commandBuilder Whoami $ do
   init <$> readProcess (show Whoami) [] ""
-
-uuidgen :: IO UUID
-uuidgen = commandBuilder UUIDgen $ do
-  uuid <- init <$> readProcess (show UUIDgen) [] ""
-  let removedHyphens = filter (/= '-') uuid
-  let (alpha, numeric) = partition isAlpha removedHyphens
-  return $ UUID $ alpha ++ numeric
 
 dot :: String -> FilePath -> FilePath -> String -> IO ExitCode
 dot fileName directory outDir fileType = commandBuilder Dot $ do
@@ -198,35 +172,28 @@ maybeCommandErr cmd = do
 
 -- Report/Latex Stuff
 
-generateLatexImage :: FilePath -> String -> String
-generateLatexImage filePath caption =
-  "\\begin{figure}[h]\n"
-    ++ "  \\centering\n"
-    ++ "  \\includegraphics[width=0.8\\textwidth]{"
-    ++ filePath
-    ++ "}\n"
-    ++ "  \\caption{"
-    ++ caption
-    ++ "}\n"
-    ++ "\\end{figure}"
-
-generateLatexTable :: Table -> String
-generateLatexTable (Table rows) =
-  unlines
-    ( [ "\\begin{table}[h]"
-      , "  \\centering"
-      , "  \\begin{tabular}{|c|c|}"
-      , "    \\hline"
-      , "    Node & Distance \\\\"
-      , "    \\hline"
-      ]
-        ++ rowStrings
-        ++ [ "    \\hline"
-           , "  \\end{tabular}"
-           , "  \\caption{Table built using Dijkstra's Algorithm}"
-           , "\\end{table}"
-           ]
-    )
+generateLatexTable :: String -> Algorithm -> Table -> String
+generateLatexTable info algo (Table rows) =
+  if length rows <= 20
+    then
+      unlines
+        ( [ "\\begin{table}[htbp]"
+          , "  \\centering"
+          , "  \\begin{tabular}{|c|c|}"
+          , "    \\hline"
+          , "    Node & Distance \\\\"
+          , "    \\hline"
+          ]
+            ++ rowStrings
+            ++ [ "    \\hline"
+               , "  \\end{tabular}"
+               , "  \\caption{Distances calculated using " ++ show algo ++ ".}"
+               , info
+               , "\\end{table}"
+               , "\\FloatBarrier"
+               ]
+        )
+    else info
  where
   rowStrings = map rowToLatex rows
   rowToLatex (Row (Label lbl, Distance dist)) = "    " ++ lbl ++ " & " ++ show dist ++ " \\\\ \\hline"
@@ -236,6 +203,7 @@ generateLatexPreamble uname =
   unlines
     [ "\\documentclass{article}"
     , "\\usepackage{fancyhdr}"
+    , "\\usepackage{placeins}"
     , "\\pagestyle{fancy}"
     , ""
     , "\\chead{Algorithms and Report generation implementation by Brian Tipton}"
@@ -258,14 +226,11 @@ generateLatexPreamble uname =
 mkSubsection :: Show a => a -> String
 mkSubsection algo = "\\subsection{" ++ show algo ++ "}"
 
-mkSection :: Show a => a -> String
-mkSection fileName = "\\section{" ++ show fileName ++ "}"
+mkFileSection :: String -> String
+mkFileSection identifier = "\\section{File: " ++ identifier ++ "}"
 
 latexEndDoc :: String
 latexEndDoc = "\\end{document}"
-
-algoSubSection :: Algorithm -> String
-algoSubSection = mkSubsection
 
 ---
 
@@ -297,9 +262,14 @@ fileToLines path = do
   let allLines = lines fileContents
   return $ tail allLines
 
+createReportDir :: IO ()
+createReportDir = do
+  pwd <- getEnv "PWD"
+  createDirectoryIfMissing True (pwd </> "results" </> "report")
+
 createOutDirStructure :: String -> IO ()
 createOutDirStructure graphFileName = do
-  pwd <- System.Environment.getEnv "PWD"
+  pwd <- getEnv "PWD"
   fileExists <- System.Directory.doesFileExist (pwd </> results)
   if fileExists
     then error $ redifyString "A regular file exists at $PWD/results please move this to continue ..."
@@ -308,7 +278,6 @@ createOutDirStructure graphFileName = do
         (dirStructureBuilder pwd)
         [ "intermediteImages"
         , "intermediateGraphVizFiles"
-        , "report"
         , "finalImages"
         ]
  where
@@ -543,26 +512,101 @@ vizTypeArrow :: VizType -> String
 vizTypeArrow VizDiGraph = "->"
 vizTypeArrow VizGraph = "--"
 
+transitionsToImages :: Graph -> TransitionSpace -> [VizImage]
+transitionsToImages graph transition =
+  transitionsToImages' graph transition []
+ where
+  transitionsToImages' :: Graph -> TransitionSpace -> [VizImage] -> [VizImage]
+  transitionsToImages' _ [] acc = acc
+  transitionsToImages' graph@Graph{nodes = nodes, fileName = fileName, directory = directory} (transition : rest) acc =
+    transitionsToImages' graph rest (fixImage start transition : acc)
+   where
+    start =
+      if null acc
+        then
+          VizImage
+            { t = VizDiGraph
+            , vizNodes = map (node2VizNode VizBlack True) nodes
+            , name = fileName
+            , path = directory
+            }
+        else head acc
+    fixImage :: VizImage -> Either Transition Transition -> VizImage
+    fixImage img = \case
+      Left t -> fixFromTransition t VizRed img
+      Right t -> fixFromTransition t VizGreen img
+    fixFromTransition
+      Transition
+        { from = from
+        , to = to
+        , transitionDistance = transitionDistance
+        , transitionCount = transitionCount
+        , state = state
+        }
+      color
+      img = replaceVizColor color img from to
+    replaceVizColor :: VizColor -> VizImage -> From -> To -> VizImage
+    replaceVizColor newColor image@VizImage{vizNodes = nodes} (From from) (To to) =
+      let newNodes = map (replaceEdgeColor from to) nodes
+       in image{vizNodes = newNodes}
+     where
+      replaceEdgeColor parent child node@VizNode{vizId = nodeId, edges = es}
+        | nodeId == parent = node{edges = map (\e -> if vizOther e == child then e{vizColor = newColor} else e) es}
+        | otherwise = node
+
+compileAllImages :: [VizImage] -> IO ()
+compileAllImages images = do
+  pwd <- getCurrentDirectory
+  pngFiles <- sequence [doDotAfterWrite (index + 1) img pwd | (index, img) <- zip [0 ..] images]
+  convert (pwd </> "results" </> name (head images)) pngFiles
+  return ()
+ where
+  doDotAfterWrite :: Int -> VizImage -> FilePath -> IO FilePath
+  doDotAfterWrite index img pwd = do
+    createOutDirStructure $ name img
+    dirPath <- graphDirResPath (name img)
+    let intVizPath = dirPath </> "intermediateGraphVizFiles"
+    let intPngPath = dirPath </> "intermediteImages"
+    let baseFileName = name img ++ show index
+    writeSingleImage baseFileName img intVizPath
+    _ <- dot baseFileName intVizPath intPngPath "png"
+    return (intPngPath </> (baseFileName ++ ".png"))
+
+writeSingleImage :: String -> VizImage -> FilePath -> IO ()
+writeSingleImage fileName img dirPath = do
+  createDirectoryIfMissing True dirPath
+  let filePath = dirPath </> (fileName ++ ".dot")
+  writeFile filePath (show img)
+  putStrLn $ "Wrote file: " ++ filePath
+
+graphDirResPath :: FilePath -> IO FilePath
+graphDirResPath name = do
+  pwd <- getEnv "PWD"
+  return $ pwd </> "results" </> name </> ""
+
 -- End Grapviz Section
 
 -- Command Line Section
-helpScreen :: String -> String
-helpScreen e =
+helpScreen :: String
+helpScreen =
   unlines
     [ "Usage: hsgraph [OPTIONS] (FILE|DIR)*"
     , ""
     , "Description:"
-    , "    hsgraph is a command-line utility for parsing and analyzing graphs using Dijkstra's Algorithm, BFS and DFS. It operates on file(s) or multiple files within a directory(s). Optionally, it can also generate GraphViz graphs. The report and images are generated to $PWD/results"
+    , "    hsgraph is a command-line utility for parsing and analyzing graphs using Dijkstra's Algorithm, BFS and DFS."
+    , "    It operates on file(s) or multiple files within a directory(s)."
+    , "    It can also generate gifs following Dijkstra's Algorithm using GraphViz graphs."
+    , "    The report and images for a given file are generated to $PWD/results/FILE_NAME/*"
     , ""
     , "Options:"
     , "  -h, --help"
     , "    Show this help message and exit."
     , ""
-    , "  -g, --graph"
-    , "    Generate VizGraphs for the selected file(s)."
+    , "  -g, --gif"
+    , "    Generate a gif following Dijkstra's Algorithm for the specified file(s)."
     , ""
-    , "  -ng, --no-gif"
-    , "    Do not generate GIFs from the image files. This option can only be used in conjunction with the -g/--graph option."
+    , "  -r, --report"
+    , "    Generate the report for the assignment on the specified files"
     , ""
     , "  -s=2, --start-node=2"
     , "    Optionally supply a node to start algorithms from"
@@ -573,17 +617,17 @@ helpScreen e =
     , ""
     , "Examples:"
     , "  hsgraph myfile.txt"
-    , "  hsgraph myfile.txt /path/to/directory"
+    , "  hsgraph myfile.txt /path/to/directory -s=5"
     , "  hsgraph /path/to/directory"
     , "  hsgraph /path/to/directory -g"
     , "  hsgraph myfile.txt -g"
-    , "  hsgraph /path/to/directory -g --no-gif"
-    , "  hsgraph myfile.txt -g --no-gif"
+    , "  hsgraph /path/to/directory -g --report"
+    , "  hsgraph myfile.txt -g -r"
     , ""
     , "Note:"
     , "  Ensure that the file(s) or directory(s) supplied only contains files that hsgraph can parse."
-    , "  The -ng/--no-gif option can only be used in conjunction with the -g/--graph option."
-    , e
+    , "  Commands required for GIF generation is dot, convert"
+    , "  Commands required for Report generation is dot, pdflatex"
     ]
 
 data CmdPath
@@ -594,8 +638,8 @@ data CmdPath
 data CommandLineOption
   = CmdPath CmdPath
   | CmdHelp
-  | CmdGraph
-  | CmdNoGif
+  | CmdGif
+  | CmdReport
   | CmdStartNode String
   deriving (Eq, Show)
 
@@ -612,11 +656,11 @@ mapCmdPathToPath =
 cmdHelpList :: [String]
 cmdHelpList = ["-h", "--help"]
 
-cmdGraphList :: [String]
-cmdGraphList = ["-g", "--graph"]
+cmdGif :: [String]
+cmdGif = ["-g", "--gif"]
 
-cmdNoGifList :: [String]
-cmdNoGifList = ["-ng", "--no-gif"]
+cmdReport :: [String]
+cmdReport = ["-r", "--report"]
 
 cmdStartNode :: String -> [String]
 cmdStartNode s = (++ s) <$> ["-s=", "--start-node="]
@@ -624,8 +668,8 @@ cmdStartNode s = (++ s) <$> ["-s=", "--start-node="]
 strToOps :: String -> IO CommandLineOption
 strToOps s
   | s `elem` cmdHelpList = return CmdHelp
-  | s `elem` cmdGraphList = return CmdGraph
-  | s `elem` cmdNoGifList = return CmdNoGif
+  | s `elem` cmdGif = return CmdGif
+  | s `elem` cmdReport = return CmdReport
   | s `elem` cmdStartNode startNode = return $ CmdStartNode startNode
   | otherwise = do
     pathExists <- System.Directory.doesFileExist s
@@ -640,51 +684,40 @@ strToOps s
 checkOps :: [CommandLineOption] -> IO [CommandLineOption]
 checkOps ops
   | containsHelp ops || null ops = do
-    putStrLn $ helpScreen ""
-    exitWith $ ExitFailure 1
-  | isGifErr ops = do
-    putStrLn $ helpScreen gifErrMsg
+    putStrLn helpScreen
     exitWith $ ExitFailure 1
   | otherwise = return ops
  where
   containsHelp = elem CmdHelp
-  isGifErr :: [CommandLineOption] -> Bool
-  isGifErr xs = elem CmdNoGif xs && notElem CmdGraph xs
-  gifErrMsg =
-    redifyString $
-      "\n  Error: must supply the "
-        ++ wrapStrInDoubleQuote "-g/--graph"
-        ++ " option to use "
-        ++ wrapStrInDoubleQuote "-ng/--no-gif"
-
-_allDirFiles :: [FilePath] -> [FilePath] -> IO [FilePath]
-_allDirFiles acc dirs =
-  case dirs of
-    [] -> return acc
-    [x] ->
-      ( \_ -> do
-          allContents <- System.Directory.listDirectory x
-          files <- dirFilter allContents
-          return $ acc ++ map (x </>) files
-      )
-        ()
-    (x : xs) ->
-      ( \_ -> do
-          allContents <- System.Directory.listDirectory x
-          files <- dirFilter allContents
-          _allDirFiles (acc ++ map (x </>) files) xs
-      )
-        ()
- where
-  isFileM :: FilePath -> IO Bool
-  isFileM path = do
-    result <- System.Directory.doesDirectoryExist path
-    return (not result)
-  dirFilter :: [FilePath] -> IO [FilePath]
-  dirFilter = filterM isFileM
 
 allDirFiles :: [FilePath] -> IO [FilePath]
-allDirFiles = _allDirFiles []
+allDirFiles = allDirFiles' []
+ where
+  allDirFiles' :: [FilePath] -> [FilePath] -> IO [FilePath]
+  allDirFiles' acc dirs =
+    case dirs of
+      [] -> return acc
+      [x] ->
+        ( \_ -> do
+            allContents <- System.Directory.listDirectory x
+            files <- dirFilter allContents
+            return $ acc ++ map (x </>) files
+        )
+          ()
+      (x : xs) ->
+        ( \_ -> do
+            allContents <- System.Directory.listDirectory x
+            files <- dirFilter allContents
+            allDirFiles' (acc ++ map (x </>) files) xs
+        )
+          ()
+   where
+    isFileM :: FilePath -> IO Bool
+    isFileM path = do
+      result <- System.Directory.doesDirectoryExist path
+      return (not result)
+    dirFilter :: [FilePath] -> IO [FilePath]
+    dirFilter = filterM isFileM
 
 isCmdDirectory :: CommandLineOption -> Bool
 isCmdDirectory x =
@@ -737,12 +770,80 @@ checkGraphs label graphs = do
 getGraphs :: [FilePath] -> Label -> IO [Graph]
 getGraphs allFiles start = mapM pathToGraph (unique allFiles) >>= checkGraphs start
 
+doReport :: Foldable t => [Map Algorithm (Graph, AlgorithmResult)] -> t CommandLineOption -> IO ()
+doReport results ops = do
+  when (CmdReport `elem` ops) $ do
+    who <- whoami
+    pwd <- getEnv "PWD"
+    createReportDir
+    let preamble = generateLatexPreamble who
+        latex = preamble ++ foldl' (++) "" (map fromMap results) ++ latexEndDoc
+    writeFile (filePath pwd) latex >> pdfLatex (filePath pwd) (dirPath pwd) Pdf >> return ()
+ where
+  filePath pwd = dirPath pwd </> "main.tex"
+  dirPath pwd = pwd </> "results" </> "report"
+  fromMap :: Map Algorithm (Graph, AlgorithmResult) -> String
+  fromMap map = do
+    let (Just (graph, dijk)) = Map.lookup Dijkstras map
+    let (Just (_, bfs)) = Map.lookup BFS map
+    let (Just (_, dfs)) = Map.lookup DFS map
+    "\\newpage\n" ++ generateFileSection graph ++ generateAlgoSection dijk ++ generateAlgoSection bfs ++ generateAlgoSection dfs
+
+  generateFileSection :: Graph -> String
+  generateFileSection Graph{fileName = fileName} = mkFileSection fileName ++ "\n"
+
+  generateAlgoSection :: AlgorithmResult -> String
+  generateAlgoSection = \case
+    DijkstrasResult r -> "\\pagestyle{empty}\n" ++ algoSubSection Dijkstras ++ genTable (numUpdates (DijkstrasResult r)) (DijkstrasResult r) ++ "\n"
+    BFSResult r -> "\\pagestyle{empty}\n" ++ algoSubSection BFS ++ genTable (numUpdates (BFSResult r)) (BFSResult r) ++ "\n"
+    DFSResult r -> "\\pagestyle{empty}\n" ++ algoSubSection DFS ++ genTable (numUpdates (DFSResult r)) (DFSResult r) ++ "\n"
+
+  numUpdates :: AlgorithmResult -> String
+  numUpdates = \case
+    (DFSResult (_, Count c)) -> "Number of times visiting new nodes: " ++ show c ++ "\n"
+    (BFSResult (_, Count c)) -> "Number of times visiting new nodes: " ++ show c ++ "\n"
+    (DijkstrasResult (_, space)) -> "\\begin{enumerate}\n\\item Number of checks: " ++ show (length space) ++ "\n" ++ "\\item Number of shorter distances discovered: " ++ show (countRights space) ++ "\n\\end{enumerate}\n"
+
+  genTable :: String -> AlgorithmResult -> String
+  genTable updates = \case
+    (DFSResult (table, _)) -> generateLatexTable updates DFS table
+    (BFSResult (table, _)) -> generateLatexTable updates BFS table
+    (DijkstrasResult (table, _)) -> generateLatexTable updates Dijkstras table
+
+  algoSubSection :: Algorithm -> String
+  algoSubSection = mkSubsection
+
+doGif :: Foldable t => [(Graph, (Table, TransitionSpace))] -> t CommandLineOption -> IO ()
+doGif results ops =
+  when (CmdGif `elem` ops) $
+    let images = map (\(x, (_, space)) -> transitionsToImages x (sortTransitionSpaceByCount space)) results
+     in mapM_ (compileAllImages . reverse) images
+
 --- End Command Line Section
 
 -----------------Course Work------------------
 
 -- Custom Types relating to the assignment
-data Algorithm = Dijkstras | BFS | DFS
+data Algorithm = Dijkstras | BFS | DFS deriving (Eq, Ord)
+
+applyAlgorithm :: (a -> b) -> [a] -> [(a, b)]
+applyAlgorithm f graphs = zip graphs (map f graphs)
+
+data AlgorithmResult
+  = BFSResult (Table, Count)
+  | DFSResult (Table, Count)
+  | DijkstrasResult (Table, TransitionSpace)
+
+toAlgorithmMap :: [(Graph, (Table, Count))] -> [(Graph, (Table, Count))] -> [(Graph, (Table, TransitionSpace))] -> [Map Algorithm (Graph, AlgorithmResult)]
+toAlgorithmMap bfsRes dfsRes dijkstrasRes =
+  map createMapFromAlgo $ zip3 bfsRes dfsRes dijkstrasRes
+ where
+  createMapFromAlgo ((graph, (bfs, bfsCount)), (_, (dfs, dfsCount)), (_, (dijkstras, space))) =
+    fromList
+      [ (BFS, (graph, BFSResult (bfs, bfsCount)))
+      , (DFS, (graph, DFSResult (dfs, dfsCount)))
+      , (Dijkstras, (graph, DijkstrasResult (dijkstras, space)))
+      ]
 
 instance Show Algorithm where
   show :: Algorithm -> String
@@ -818,16 +919,22 @@ type TransitionSpace = [Either Transition Transition]
 tableToTuples :: Table -> [(Label, Distance)]
 tableToTuples t = map row $ rows t
 
+tuplesToTable :: [(Label, Int)] -> [Row]
+tuplesToTable = map (\(x, y) -> Row (x, Distance y))
+
 eitherTransitionCount :: Either Transition Transition -> Count
 eitherTransitionCount t = count
  where
   count = transitionCount $ unwrapBothEither t
 
+sortTransitionSpaceByCount :: TransitionSpace -> TransitionSpace
+sortTransitionSpaceByCount = sortOn (count . transitionCount . unwrapBothEither)
+
 -- End Recording Types
 
 -- Dijkstra Specific
-dijkstra :: Graph -> Label -> (Table, TransitionSpace)
-dijkstra graph start =
+dijkstra :: Label -> Graph -> (Table, TransitionSpace)
+dijkstra start graph =
   let initial = Table [Row (label, if label == start then Distance 0 else Distance maxBound) | Node label _ <- nodes graph]
    in dijkstra' graph [] (initial, [])
  where
@@ -838,20 +945,20 @@ dijkstra graph start =
     let unvisited = filter (\(l, _) -> l `notElem` visited) (tableToTuples table)
         (nextLabel, nextDistance) = minimumBy (comparing snd) unvisited
         Just (Node _ adjacents) = find (\(Node label _) -> label == nextLabel) (nodes graph)
-        updatedDistances = foldl' (updateDistance nextLabel nextDistance) (table, space) adjacents
+        updatedDistances = foldl' (updateDistance nextLabel nextDistance) (table, space) (sortOn distanceToOther adjacents)
      in dijkstra' graph (nextLabel : visited) updatedDistances
 
 updateDistance :: Label -> Distance -> (Table, TransitionSpace) -> Edge -> (Table, TransitionSpace)
 updateDistance current (Distance currentDistance) (distanceTable, space) Edge{other = destination, distanceToOther = Distance weight}
   | newDistance < destinationDistance =
-    ( Table $ Row (destination, Distance newDistance) : delete (Row (destination, Distance destinationDistance)) (rows distanceTable)
+    ( newTable
     , Right
         Transition
           { from = From current
           , to = To destination
           , transitionDistance = Distance newDistance
           , transitionCount = currCount
-          , state = distanceTable
+          , state = newTable
           } :
       space
     )
@@ -874,80 +981,53 @@ updateDistance current (Distance currentDistance) (distanceTable, space) Edge{ot
     if null space
       then Count 1
       else Count $ count (eitherTransitionCount (head space)) + 1
+  newTable = Table $ Row (destination, Distance newDistance) : delete (Row (destination, Distance destinationDistance)) (rows distanceTable)
 
 -- End Dijkstra Stuff
 
+-- Breadth/Depth First
+breadthFirstSearch :: Label -> Graph -> (Table, Count)
+breadthFirstSearch startLabel graph =
+  let (visitedNodes, cnt) = breadthFirstSearch' (Count 0) [] [(startLabel, 0)]
+   in (Table{rows = tuplesToTable visitedNodes}, cnt)
+ where
+  breadthFirstSearch' :: Count -> [(Label, Int)] -> [(Label, Int)] -> ([(Label, Int)], Count)
+  breadthFirstSearch' count visited [] = (visited, count)
+  breadthFirstSearch' (Count count) visited ((currentLabel, distance) : queue)
+    | currentLabel `elem` map fst visited = breadthFirstSearch' (Count count) visited queue
+    | otherwise =
+      let currentNode = findNodeByLabel graph currentLabel
+          newVisited = (currentLabel, distance) : visited
+          adjacentNodes = unvisitedAdjacent visited currentNode
+          newQueue = queue ++ [(label, distance + weight) | (label, weight) <- adjacentNodes]
+       in breadthFirstSearch' (Count (count + 1)) newVisited newQueue
+
+depthFirstSearch :: Label -> Graph -> (Table, Count)
+depthFirstSearch startLabel graph =
+  let (visitedNodes, cnt) = depthFirstSearch' (Count 0) [] [(startLabel, 0)]
+   in (Table{rows = tuplesToTable visitedNodes}, cnt)
+ where
+  depthFirstSearch' :: Count -> [(Label, Int)] -> [(Label, Int)] -> ([(Label, Int)], Count)
+  depthFirstSearch' count visited [] = (visited, count)
+  depthFirstSearch' (Count count) visited ((currentLabel, dist) : stack)
+    | currentLabel `elem` map fst visited = depthFirstSearch' (Count count) visited stack
+    | otherwise =
+      let currentNode = findNodeByLabel graph currentLabel
+          newVisited = (currentLabel, dist) : visited
+          adjacentNodes = unvisitedAdjacent visited currentNode
+          newStack = [(label, dist + weight) | (label, weight) <- adjacentNodes] ++ stack
+       in depthFirstSearch' (Count (count + 1)) newVisited newStack
+
+findNodeByLabel :: Graph -> Label -> Node
+findNodeByLabel graph lbl = head $ filter (\node -> identifier node == lbl) (nodes graph)
+
+unvisitedAdjacent :: [(Label, Int)] -> Node -> [(Label, Int)]
+unvisitedAdjacent visited node =
+  [(lbl, weight) | Edge{other = lbl, distanceToOther = Distance weight} <- adjacent node, lbl `notElem` map fst visited]
+
+-- End Breadth/Depth First
+
 -------------- End Course Work Section ---------------
-transitionsToImages :: Graph -> TransitionSpace -> [VizImage]
-transitionsToImages graph transition =
-  transitionsToImages' graph transition []
- where
-  transitionsToImages' :: Graph -> TransitionSpace -> [VizImage] -> [VizImage]
-  transitionsToImages' _ [] acc = acc
-  transitionsToImages' graph@Graph{nodes = nodes, fileName = fileName, directory = directory} (transition : rest) acc =
-    transitionsToImages' graph rest (fixImage start transition : acc)
-   where
-    start =
-      if null acc
-        then
-          VizImage
-            { t = VizDiGraph
-            , vizNodes = map (node2VizNode VizBlack True) nodes
-            , name = fileName
-            , path = directory
-            }
-        else head acc
-    fixImage :: VizImage -> Either Transition Transition -> VizImage
-    fixImage img = \case
-      Left t -> fixFromTransition t VizRed img
-      Right t -> fixFromTransition t VizGreen img
-    fixFromTransition
-      Transition
-        { from = from
-        , to = to
-        , transitionDistance = transitionDistance
-        , transitionCount = transitionCount
-        , state = state
-        }
-      color
-      img = replaceVizColor color img from to
-    replaceVizColor :: VizColor -> VizImage -> From -> To -> VizImage
-    replaceVizColor newColor image@VizImage{vizNodes = nodes} (From from) (To to) =
-      let newNodes = map (replaceEdgeColor from to) nodes
-       in image{vizNodes = newNodes}
-     where
-      replaceEdgeColor parent child node@VizNode{vizId = nodeId, edges = es}
-        | nodeId == parent = node{edges = map (\e -> if vizOther e == child then e{vizColor = newColor} else e) es}
-        | otherwise = node
-
-compileAllImages :: [VizImage] -> IO ()
-compileAllImages images = do
-  pwd <- getCurrentDirectory
-  pngFiles <- sequence [doDotAfterWrite (index + 1) img pwd | (index, img) <- zip [0 ..] images]
-  convert (pwd </> "results" </> name (head images)) pngFiles
-  return ()
- where
-  doDotAfterWrite :: Int -> VizImage -> FilePath -> IO FilePath
-  doDotAfterWrite index img pwd = do
-    dirPath <- graphDirResPath (name img)
-    let intVizPath = dirPath </> "intermediateGraphVizFiles"
-    let intPngPath = dirPath </> "intermediteImages"
-    let baseFileName = name img ++ show index
-    writeSingleImage baseFileName img intVizPath
-    _ <- dot baseFileName intVizPath intPngPath "png"
-    return (intPngPath </> (baseFileName ++ ".png"))
-
-writeSingleImage :: String -> VizImage -> FilePath -> IO ()
-writeSingleImage fileName img dirPath = do
-  createDirectoryIfMissing True dirPath
-  let filePath = dirPath </> (fileName ++ ".dot")
-  writeFile filePath (show img)
-  putStrLn $ "Written file: " ++ filePath
-
-graphDirResPath :: FilePath -> IO FilePath
-graphDirResPath name = do
-  pwd <- System.Environment.getEnv "PWD"
-  return $ pwd </> "results" </> name </> ""
 
 main :: IO ()
 main = do
@@ -958,9 +1038,16 @@ main = do
   readDirFiles <- allDirFiles dirs
   let allFiles = mapCmdPathToPath (filter isCmdFile ops) ++ readDirFiles
   let resultPaths = map takeBaseName allFiles
+
   graphs <- getGraphs allFiles startLabel
-  ((fin, res), time) <- timeF $ dijkstra (head graphs) startLabel
-  let headGraphs = head graphs
-  let imgs = reverse $ transitionsToImages headGraphs (reverse res)
-  mapM_ createOutDirStructure resultPaths >> compileAllImages imgs
-  putStrLn "Finished Generation!"
+
+  let bfsRes = applyAlgorithm (breadthFirstSearch startLabel) graphs
+  let dfsRes = applyAlgorithm (depthFirstSearch startLabel) graphs
+  let dijkstrasRes = applyAlgorithm (dijkstra startLabel) graphs
+  let algoMaps = toAlgorithmMap bfsRes dfsRes dijkstrasRes
+
+  -- print algoMaps
+  doGif dijkstrasRes ops
+  doReport algoMaps ops
+
+  putStrLn "Done!"
